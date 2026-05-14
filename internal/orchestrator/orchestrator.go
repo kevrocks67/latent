@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -18,6 +17,7 @@ import (
 	"github.com/kevrocks67/latent/internal/coordinator"
 	"github.com/kevrocks67/latent/internal/metadata"
 	"github.com/kevrocks67/latent/internal/storage"
+	"github.com/kevrocks67/latent/internal/upstream"
 )
 
 // Orchestrator coordinates between durable metadata (MySQL), distributed locks (Redis),
@@ -29,7 +29,7 @@ type Orchestrator struct {
 	metastore   metadata.MetadataStore
 	coordinator coordinator.Coordinator
 	storage     storage.BlobStore
-	httpClient  *http.Client
+	fetcher     upstream.Fetcher
 
 	// TTL
 	defaultTTL time.Duration
@@ -55,18 +55,12 @@ func generateNodeID() string {
 }
 
 // Initializes the main orchestaror with its required dependencies.
-func New(metastore metadata.MetadataStore, coord coordinator.Coordinator, storage storage.BlobStore, client *http.Client, defaultTTL time.Duration) *Orchestrator {
-	if client == nil {
-		client = &http.Client{
-			Timeout: 30 * time.Second,
-		}
-	}
-
+func New(metastore metadata.MetadataStore, coord coordinator.Coordinator, storage storage.BlobStore, fetcher upstream.Fetcher, defaultTTL time.Duration) *Orchestrator {
 	return &Orchestrator{
 		metastore:   metastore,
 		coordinator: coord,
 		storage:     storage,
-		httpClient:  client,
+		fetcher:     fetcher,
 		defaultTTL:  defaultTTL,
 		domainTTLs:  make(map[string]time.Duration),
 		nodeID:      generateNodeID(),
@@ -104,7 +98,7 @@ func (o *Orchestrator) getTTLForURL(u string) time.Duration {
 
 // Fetch attempts to retrieve an artifact from cacho. If missing, it coordinates
 // a single-flight upstream fetch to populate the cache and stream to the user.
-func (o *Orchestrator) Fetch(ctx context.Context, url string) (io.ReadCloser, error) {
+func (o *Orchestrator) Pull(ctx context.Context, url string) (io.ReadCloser, error) {
 	key, err := GenerateCacheKey(url)
 	if err != nil {
 		return nil, err
@@ -191,35 +185,12 @@ func (o *Orchestrator) executeFill(ctx context.Context, key string, url string) 
 		return nil, fmt.Errorf("failed to initialize metadata: %w", err)
 	}
 
-	// Fail fast if upstream URL is bad
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	resp, err := o.fetcher.Fetch(ctx, url)
 	if err != nil {
 		o.metastore.UpdateState(ctx, key, metadata.StateError)
 		releaseLock()
 		o.coordinator.SignalReady(ctx, key)
-
-		return nil, fmt.Errorf("failed to create upstream request: %w", err)
-	}
-
-	etag := ""
-
-	// Get artifact from upstream (ephemeral)
-	resp, err := o.httpClient.Do(req)
-	if err != nil {
-		o.metastore.UpdateState(ctx, key, metadata.StateError)
-		releaseLock()
-		o.coordinator.SignalReady(ctx, key)
-
-		return nil, fmt.Errorf("upstream request failed: %w", err)
-	}
-
-	// Handle Get failing in any way
-	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
-		o.metastore.UpdateState(ctx, key, metadata.StateError)
-		releaseLock()
-		o.coordinator.SignalReady(ctx, key)
-		return nil, fmt.Errorf("upstream returned non-200 status: %d", resp.StatusCode)
+		return nil, fmt.Errorf("upstream fetch failed : %w", err)
 	}
 
 	// If the size is part of the header, we update it
@@ -256,7 +227,7 @@ func (o *Orchestrator) executeFill(ctx context.Context, key string, url string) 
 		if copyErr != nil {
 			o.metastore.UpdateState(context.Background(), key, metadata.StateError)
 		} else {
-			o.metastore.SetReady(context.Background(), key, counter.total, etag)
+			o.metastore.SetReady(context.Background(), key, counter.total, resp.ETag)
 		}
 		o.coordinator.SignalReady(context.Background(), key)
 	}()

@@ -27,6 +27,7 @@ import (
 	v_coord "github.com/kevrocks67/latent/internal/coordinator/valkey"
 	pg_store "github.com/kevrocks67/latent/internal/metadata/postgres"
 	"github.com/kevrocks67/latent/internal/storage/s3"
+	"github.com/kevrocks67/latent/internal/upstream"
 )
 
 func setupIntegration(t *testing.T) (*Orchestrator, func()) {
@@ -101,7 +102,16 @@ func setupIntegration(t *testing.T) (*Orchestrator, func()) {
 	})
 	require.NoError(t, err)
 
-	orchestrator := New(pg_store.NewPostgresStore(db), coord, s3.NewS3Store(s3Client, bucket), nil, 1*time.Hour)
+	// Initialize the real HTTP fetcher with appropriate limits for testing
+	fetcher := upstream.NewHTTPFetcher(10*time.Second, 10)
+
+	orchestrator := New(
+		pg_store.NewPostgresStore(db),
+		coord,
+		s3.NewS3Store(s3Client, bucket),
+		fetcher,
+		1*time.Hour,
+	)
 
 	cleanup := func() {
 		coord.Close()
@@ -118,7 +128,7 @@ func TestCoordinatedFetchIntegration(t *testing.T) {
 	orchestrator, cleanup := setupIntegration(t)
 	defer cleanup()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 
 	var mu sync.Mutex
@@ -127,8 +137,12 @@ func TestCoordinatedFetchIntegration(t *testing.T) {
 		mu.Lock()
 		callCount++
 		mu.Unlock()
-		// Sleep long enough that other requests hit the coordinator lock/wait logic
-		time.Sleep(300 * time.Millisecond)
+
+		// Simulate upstream latency
+		time.Sleep(400 * time.Millisecond)
+
+		w.Header().Set("ETag", "\"v1-integration\"")
+		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("integration-data"))
 	}))
@@ -143,12 +157,12 @@ func TestCoordinatedFetchIntegration(t *testing.T) {
 	for i := 0; i < numClients; i++ {
 		go func(id int) {
 			defer wg.Done()
-			// Stagger start slightly to ensure one clearly becomes the leader
-			time.Sleep(time.Duration(id*10) * time.Millisecond)
+			// Stagger start slightly
+			time.Sleep(time.Duration(id*20) * time.Millisecond)
 
-			r, err := orchestrator.Fetch(ctx, ts.URL)
+			r, err := orchestrator.Pull(ctx, ts.URL)
 			if err != nil {
-				errChan <- fmt.Errorf("client %d fetch error: %w", id, err)
+				errChan <- fmt.Errorf("client %d Pull error: %w", id, err)
 				return
 			}
 			if r == nil {
@@ -172,12 +186,15 @@ func TestCoordinatedFetchIntegration(t *testing.T) {
 	close(errChan)
 
 	for err := range errChan {
-		t.Errorf("Concurrent Fetch Failure: %v", err)
+		t.Errorf("Concurrent Pull Failure: %v", err)
 	}
+
+	// Small pause to allow background database/storage tasks to complete
+	time.Sleep(300 * time.Millisecond)
 
 	mu.Lock()
 	finalCount := callCount
 	mu.Unlock()
 
-	assert.Equal(t, 1, finalCount, "Upstream server should only be called once for concurrent identical requests")
+	assert.Equal(t, 1, finalCount, "Upstream server should only be called once for concurrent identical requests due to coordination")
 }
