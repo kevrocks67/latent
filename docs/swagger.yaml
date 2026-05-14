@@ -1,0 +1,12 @@
+basePath: /api/v1
+host: localhost:8060
+info:
+  contact:
+    name: API Support
+    url: http://github.com/kevindiaz/latent
+  description: Distributed artifact cache adapter.
+  termsOfService: http://swagger.io/terms/
+  title: Latent API
+  version: "1.0"
+paths: {}
+swagger: "2.0"

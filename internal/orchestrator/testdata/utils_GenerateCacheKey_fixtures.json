@@ -1,0 +1,80 @@
+[
+  {
+    "name": "Host Case Insensitivity",
+    "url1": "https://EXAMPLE.com/file",
+    "url2": "https://example.com/file",
+    "is_equal": true
+  },
+  {
+    "name": "Path Case Sensitivity (Critical)",
+    "url1": "https://example.com/Artifact.tar.gz",
+    "url2": "https://example.com/artifact.tar.gz",
+    "is_equal": false
+  },
+  {
+    "name": "Trailing Slash Normalization",
+    "url1": "https://example.com/path/",
+    "url2": "https://example.com/path",
+    "is_equal": true
+  },
+  {
+    "name": "Query Parameter Ordering",
+    "url1": "https://example.com/api?arch=arm64&os=linux",
+    "url2": "https://example.com/api?os=linux&arch=arm64",
+    "is_equal": true
+  },
+  {
+    "name": "Auth Token Stripping (General)",
+    "url1": "https://example.com/file?token=userA_secret",
+    "url2": "https://example.com/file?token=userB_secret",
+    "is_equal": true
+  },
+  {
+    "name": "AWS Signature Stripping",
+    "url1": "https://bucket.s3.amazonaws.com/file?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=sig1",
+    "url2": "https://bucket.s3.amazonaws.com/file?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=sig2",
+    "is_equal": true
+  },
+  {
+    "name": "Google Signed URL Stripping",
+    "url1": "https://storage.googleapis.com/file?x-goog-signature=abc&authuser=0",
+    "url2": "https://storage.googleapis.com/file?x-goog-signature=xyz&authuser=1",
+    "is_equal": true
+  },
+  {
+    "name": "Azure SAS Token Stripping",
+    "url1": "https://account.blob.core.windows.net/container/file?se=2023-01-01&sig=sig1&sp=r",
+    "url2": "https://account.blob.core.windows.net/container/file?se=2024-01-01&sig=sig2&sp=r",
+    "is_equal": true
+  },
+  {
+    "name": "Cloudflare Token Stripping",
+    "url1": "https://example.com/file?cf_token=old_token",
+    "url2": "https://example.com/file?cf_token=new_token",
+    "is_equal": true
+  },
+  {
+    "name": "Fastly Signature Stripping",
+    "url1": "https://example.com/file?fastly_hash=hash1",
+    "url2": "https://example.com/file?fastly_hash=hash2",
+    "is_equal": true
+  },
+  {
+    "name": "Fragment Stripping",
+    "url1": "https://example.com/file#part1",
+    "url2": "https://example.com/file#part2",
+    "is_equal": true
+  },
+  {
+    "name": "Default Port Removal",
+    "url1": "https://example.com:443/file",
+    "url2": "https://example.com/file",
+    "is_equal": true
+  },
+  {
+    "name": "Encoded Space Handling",
+    "url1": "https://example.com/my%20file.zip",
+    "url2": "https://example.com/my+file.zip",
+    "is_equal": true
+  }
+]

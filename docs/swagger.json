@@ -1,0 +1,16 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "Distributed artifact cache adapter.",
+        "title": "Latent API",
+        "termsOfService": "http://swagger.io/terms/",
+        "contact": {
+            "name": "API Support",
+            "url": "http://github.com/kevindiaz/latent"
+        },
+        "version": "1.0"
+    },
+    "host": "localhost:8060",
+    "basePath": "/api/v1",
+    "paths": {}
+}
