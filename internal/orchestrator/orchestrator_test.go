@@ -417,3 +417,55 @@ func TestOrchestrator_executeFill_Failures(t *testing.T) {
 		}
 	})
 }
+
+// New tests for StateError retry/backoff
+func TestOrchestrator_Pull_StateErrorRetry(t *testing.T) {
+	// Allow retry after cooldown (FailureCount=1 -> cooldown=60s). Set LastErrorAt far in the past.
+	url := "http://retry.example/fetch"
+	key, _ := GenerateCacheKey(url)
+	past := time.Now().Add(-2 * time.Minute)
+	store := &MockMetaStore{records: map[string]*metadata.Record{
+		key: {State: metadata.StateError, ObjectKey: "obj-retry", FailureCount: 1, LastErrorAt: &past},
+	}}
+	coord := &MockCoordinator{}
+	storage := &MockStorage{}
+	fetcher := &MockFetcher{FetchFunc: func(ctx context.Context, u string) (*upstream.UpstreamResult, error) {
+		return &upstream.UpstreamResult{Body: io.NopCloser(strings.NewReader("retried-data")), ETag: "e1"}, nil
+	}}
+	orch := New(store, coord, storage, fetcher, 1*time.Hour)
+
+	r, err := orch.Pull(context.Background(), url)
+	if err != nil {
+		t.Fatalf("expected Pull to succeed after cooldown, got error: %v", err)
+	}
+	b, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+	if string(b) != "retried-data" {
+		t.Fatalf("unexpected body: %s", string(b))
+	}
+
+	// allow background SetReady to run
+	time.Sleep(50 * time.Millisecond)
+	rec, _ := store.GetRecord(context.Background(), key)
+	if rec == nil || rec.State != metadata.StateReady {
+		t.Fatalf("expected record ready after retry, got %+v", rec)
+	}
+}
+
+func TestOrchestrator_Pull_StateErrorTooSoon(t *testing.T) {
+	// Too soon to retry: LastErrorAt within cooldown window
+	url := "http://retry.soon/fetch"
+	key, _ := GenerateCacheKey(url)
+	recent := time.Now().Add(-10 * time.Second)
+	store := &MockMetaStore{records: map[string]*metadata.Record{
+		key: {State: metadata.StateError, ObjectKey: "obj-retry", FailureCount: 1, LastErrorAt: &recent},
+	}}
+	orch := New(store, &MockCoordinator{}, &MockStorage{}, &MockFetcher{}, 1*time.Hour)
+
+	_, err := orch.Pull(context.Background(), url)
+	if err == nil || !strings.Contains(err.Error(), "retry after") {
+		t.Fatalf("expected retry-after error, got: %v", err)
+	}
+}
