@@ -1,5 +1,11 @@
 [
   {
+    "name": "Trailing Slash",
+    "url1": "https://example.com",
+    "url2": "https://example.com/",
+    "is_equal": true
+  },
+  {
     "name": "Host Case Insensitivity",
     "url1": "https://EXAMPLE.com/file",
     "url2": "https://example.com/file",

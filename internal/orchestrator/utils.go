@@ -37,6 +37,9 @@ func GenerateCacheKey(rawURL string) (string, error) {
 
 	// Trim trailing slashes from path and normalize spaces
 	path := strings.ReplaceAll(u.EscapedPath(), "+", "%20")
+	if path == "" {
+		path = "/"
+	}
 	if path != "/" {
 		path = strings.TrimSuffix(path, "/")
 	}
