@@ -62,6 +62,12 @@ type Record struct {
 
 	// UpdatedAt is used for auditing
 	UpdatedAt time.Time `json:"updated_at" db:"updated_at"`
+
+	// FailureCount tracks the number of consecutive failed fills
+	FailureCount int `json:"failure_count" db:"failure_count"`
+
+	// LastErrorAt is set when a fill fails and cleared on successful SetReady
+	LastErrorAt *time.Time `json:"last_error_at" db:"last_error_at"`
 }
 
 // MetadataStore defines the durable storage operations for cache records.
@@ -93,6 +99,9 @@ type MetadataStore interface {
 	// SetReady marks a record as READY and sets its final size atomically.
 	// This ensures that SizeBytes is never out of sync with the READY state.
 	SetReady(ctx context.Context, key string, size int64, etag string) error
+
+	// IncrementFailure increments the failure counter and sets LastErrorAt to NOW().
+	IncrementFailure(ctx context.Context, key string) error
 
 	// DeleteRecord removes the metadata entry from durable storage.
 	DeleteRecord(ctx context.Context, key string) error

@@ -124,7 +124,23 @@ func (o *Orchestrator) Pull(ctx context.Context, url string) (io.ReadCloser, err
 				}
 				continue
 			case metadata.StateError:
-				return nil, fmt.Errorf("cache entry is in error state; previous fill attempt failed")
+				// Determine cooldown: base doubled per failure, capped
+				base := 30 * time.Second
+				cap := 1 * time.Hour
+				cooldown := base
+				for i := 0; i < record.FailureCount; i++ {
+					cooldown *= 2
+					if cooldown >= cap {
+						cooldown = cap
+						break
+					}
+				}
+				// If last error is unset or cooldown expired, allow retry
+				if record.LastErrorAt == nil || time.Since(*record.LastErrorAt) >= cooldown {
+					log.Printf("Pull: retrying key=%s after cooldown (%v)", key, cooldown)
+					break
+				}
+				return nil, fmt.Errorf("cache entry is in error state; retry after %v", cooldown)
 			}
 		}
 
@@ -190,7 +206,10 @@ func (o *Orchestrator) executeFill(ctx context.Context, key string, url string) 
 
 	resp, err := o.fetcher.Fetch(ctx, url)
 	if err != nil {
-		o.metastore.UpdateState(ctx, key, metadata.StateError)
+		// record failure and mark error state with increment
+		if ierr := o.metastore.IncrementFailure(ctx, key); ierr != nil {
+			log.Printf("executeFill: IncrementFailure failed for key=%s: %v", key, ierr)
+		}
 		releaseLock()
 		o.coordinator.SignalReady(ctx, key)
 		return nil, fmt.Errorf("upstream fetch failed : %w", err)
@@ -206,7 +225,10 @@ func (o *Orchestrator) executeFill(ctx context.Context, key string, url string) 
 	sw, err := o.storage.Writer(ctx, objectKey)
 	if err != nil {
 		resp.Body.Close()
-		o.metastore.UpdateState(ctx, key, metadata.StateError)
+		// record failure
+		if ierr := o.metastore.IncrementFailure(ctx, key); ierr != nil {
+			log.Printf("executeFill: IncrementFailure failed for key=%s: %v", key, ierr)
+		}
 		releaseLock()
 		o.coordinator.SignalReady(ctx, key)
 
@@ -240,7 +262,9 @@ func (o *Orchestrator) executeFill(ctx context.Context, key string, url string) 
 		log.Printf("executeFill: starting copy to client and storage for key=%s", key)
 		_, copyErr := io.Copy(mw, resp.Body)
 		if copyErr != nil {
-			o.metastore.UpdateState(context.Background(), key, metadata.StateError)
+			if ierr := o.metastore.IncrementFailure(context.Background(), key); ierr != nil {
+				log.Printf("executeFill: IncrementFailure failed for key=%s: %v", key, ierr)
+			}
 			log.Printf("executeFill: copy error for key=%s: %v", key, copyErr)
 		} else {
 			o.metastore.SetReady(context.Background(), key, counter.total, resp.ETag)

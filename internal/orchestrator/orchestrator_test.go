@@ -75,8 +75,24 @@ func (m *MockMetaStore) SetReady(ctx context.Context, key string, size int64, et
 		r.State = metadata.StateReady
 		r.SizeBytes = size
 		r.ETag = etag
+		// reset failure tracking
+		r.FailureCount = 0
+		r.LastErrorAt = nil
 	}
 	return nil
+}
+
+func (m *MockMetaStore) IncrementFailure(ctx context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if r, ok := m.records[key]; ok {
+		r.FailureCount++
+		now := time.Now()
+		r.LastErrorAt = &now
+		r.State = metadata.StateError
+		return nil
+	}
+	return errors.New("record not found")
 }
 
 func (m *MockMetaStore) UpdateState(ctx context.Context, key string, state metadata.CacheState) error {

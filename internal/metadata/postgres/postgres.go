@@ -20,7 +20,8 @@ func (s *PostgresStore) GetRecord(ctx context.Context, key string) (*metadata.Re
 	query := `
 		SELECT
 			cache_key, object_key, owner_node, state, etag,
-			size_bytes, fresh_until, validated_at, created_at, updated_at
+			size_bytes, fresh_until, validated_at, created_at, updated_at,
+			failure_count, last_error_at
 		FROM cache_records
 		WHERE cache_key = $1`
 
@@ -36,10 +37,12 @@ func (s *PostgresStore) GetRecord(ctx context.Context, key string) (*metadata.Re
 		&r.ValidatedAt,
 		&r.CreatedAt,
 		&r.UpdatedAt,
+		&r.FailureCount,
+		&r.LastErrorAt,
 	)
 
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("No matching rows found for key %s: %w", key, err)
+		return nil, nil
 	}
 
 	if err != nil {
@@ -53,9 +56,10 @@ func (s *PostgresStore) UpsertRecord(ctx context.Context, record *metadata.Recor
 	query := `
 		INSERT INTO cache_records (
 			cache_key, object_key, owner_node, state, etag,
-			size_bytes, fresh_until, validated_at, created_at, updated_at
+			size_bytes, fresh_until, validated_at, created_at, updated_at,
+			failure_count, last_error_at
 		)
-		VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		ON CONFLICT (cache_key) DO UPDATE SET
 			owner_node = EXCLUDED.owner_node,
 			state = EXCLUDED.state,
@@ -63,19 +67,23 @@ func (s *PostgresStore) UpsertRecord(ctx context.Context, record *metadata.Recor
 			size_bytes = EXCLUDED.size_bytes,
 			fresh_until = EXCLUDED.fresh_until,
 			validated_at = EXCLUDED.validated_at,
-			updated_at = NOW()`
+			updated_at = NOW(),
+			failure_count = EXCLUDED.failure_count,
+			last_error_at = EXCLUDED.last_error_at`
 
 	_, err := s.db.ExecContext(ctx, query,
-		record.CacheKey,    // $1
-		record.ObjectKey,   // $2
-		record.OwnerNode,   // $3
-		record.State,       // $4
-		record.ETag,        // $5
-		record.SizeBytes,   // $6
-		record.FreshUntil,  // $7
-		record.ValidatedAt, // $8
-		record.CreatedAt,   // $9
-		record.UpdatedAt,   // $10
+		record.CacheKey,     // $1
+		record.ObjectKey,    // $2
+		record.OwnerNode,    // $3
+		record.State,        // $4
+		record.ETag,         // $5
+		record.SizeBytes,    // $6
+		record.FreshUntil,   // $7
+		record.ValidatedAt,  // $8
+		record.CreatedAt,    // $9
+		record.UpdatedAt,    // $10
+		record.FailureCount, // $11
+		record.LastErrorAt,  // $12
 	)
 	if err != nil {
 		return fmt.Errorf("postgres upsert error: %w", err)
@@ -93,6 +101,11 @@ func (s *PostgresStore) UpdateState(ctx context.Context, key string, state metad
 }
 
 func (s *PostgresStore) UpdateSizeBytes(ctx context.Context, key string, size int64) error {
+	query := `UPDATE cache_records SET size_bytes = $1, updated_at = NOW() WHERE cache_key = $2`
+	_, err := s.db.ExecContext(ctx, query, size, key)
+	if err != nil {
+		return fmt.Errorf("postgres update size error: %w", err)
+	}
 	return nil
 }
 
@@ -103,7 +116,9 @@ func (s *PostgresStore) SetReady(ctx context.Context, key string, size int64, et
 		    size_bytes = $1,
 		    etag = $2,
 		    validated_at = NOW(),
-		    updated_at = NOW()
+		    updated_at = NOW(),
+		    failure_count = 0,
+		    last_error_at = NULL
 		WHERE cache_key = $3`
 	_, err := s.db.ExecContext(ctx, query, size, etag, key)
 	if err != nil {
@@ -118,6 +133,15 @@ func (s *PostgresStore) DeleteRecord(ctx context.Context, key string) error {
 	_, err := s.db.ExecContext(ctx, query, key)
 	if err != nil {
 		return fmt.Errorf("postgres delete error: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) IncrementFailure(ctx context.Context, key string) error {
+	query := `UPDATE cache_records SET failure_count = failure_count + 1, last_error_at = NOW(), state = 'error', updated_at = NOW() WHERE cache_key = $1`
+	_, err := s.db.ExecContext(ctx, query, key)
+	if err != nil {
+		return fmt.Errorf("postgres increment failure error: %w", err)
 	}
 	return nil
 }

@@ -17,7 +17,9 @@ CREATE TABLE IF NOT EXISTS cache_records (
     fresh_until  TIMESTAMPTZ NOT NULL,
     validated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    last_error_at TIMESTAMPTZ NULL
 );
 
 -- Index for background cleanup of expired artifacts

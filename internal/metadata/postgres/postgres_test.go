@@ -201,3 +201,43 @@ func TestPostgresStore_DeleteRecord(t *testing.T) {
 		t.Error("expected record to be deleted, but it still exists")
 	}
 }
+
+func TestPostgresStore_IncrementFailure(t *testing.T) {
+	cleanupDB(t)
+	ctx := context.Background()
+	key := "failure-key"
+	rec := &metadata.Record{
+		CacheKey:   key,
+		ObjectKey:  "obj-fail",
+		State:      metadata.StateFilling,
+		FreshUntil: time.Now().Add(time.Hour),
+	}
+
+	if err := testStore.UpsertRecord(ctx, rec); err != nil {
+		t.Fatalf("UpsertRecord failed: %v", err)
+	}
+
+	if err := testStore.IncrementFailure(ctx, key); err != nil {
+		t.Fatalf("IncrementFailure failed: %v", err)
+	}
+
+	got, err := testStore.GetRecord(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FailureCount == 0 || got.LastErrorAt == nil {
+		t.Errorf("expected failure recorded, got count=%d last=%v", got.FailureCount, got.LastErrorAt)
+	}
+
+	// Now call SetReady and ensure reset
+	if err := testStore.SetReady(ctx, key, 123, "etag"); err != nil {
+		t.Fatal(err)
+	}
+	got2, err := testStore.GetRecord(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got2.FailureCount != 0 || got2.LastErrorAt != nil {
+		t.Errorf("expected failures reset on SetReady, got count=%d last=%v", got2.FailureCount, got2.LastErrorAt)
+	}
+}
