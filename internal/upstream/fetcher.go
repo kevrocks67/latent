@@ -66,12 +66,12 @@ func (f *httpFetcher) Fetch(ctx context.Context, url string) (*UpstreamResult, e
 	var dnsDuration, connDuration, tlsDuration, ttfb time.Duration
 
 	trace := &httptrace.ClientTrace{
-		DNSStart: func(info httptrace.DNSStartInfo) { dnsStart = time.Now() },
-		DNSDone: func(info httptrace.DNSDoneInfo) { dnsDuration = time.Since(dnsStart) },
-		ConnectStart: func(network, addr string) { connStart = time.Now() },
-		ConnectDone: func(network, addr string, err error) { connDuration = time.Since(connStart) },
-		TLSHandshakeStart: func() { tlsStart = time.Now() },
-		TLSHandshakeDone: func(state tls.ConnectionState, err error) { tlsDuration = time.Since(tlsStart) },
+		DNSStart:             func(info httptrace.DNSStartInfo) { dnsStart = time.Now() },
+		DNSDone:              func(info httptrace.DNSDoneInfo) { dnsDuration = time.Since(dnsStart) },
+		ConnectStart:         func(network, addr string) { connStart = time.Now() },
+		ConnectDone:          func(network, addr string, err error) { connDuration = time.Since(connStart) },
+		TLSHandshakeStart:    func() { tlsStart = time.Now() },
+		TLSHandshakeDone:     func(state tls.ConnectionState, err error) { tlsDuration = time.Since(tlsStart) },
 		GotFirstResponseByte: func() { ttfb = time.Since(start); log.Printf("fetch trace: first byte after %v for %s", ttfb, url) },
 	}
 

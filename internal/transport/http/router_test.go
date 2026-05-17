@@ -52,7 +52,7 @@ func TestRegisterRoutes(t *testing.T) {
 	})
 
 	t.Run("Fetch API with Wildcard Path", func(t *testing.T) {
-		artifactPath := "github.com/kevrocks67/latent/releases/v1.0.0.tar.gz"
+		artifactPath := "github.com/kevrocks67/final-project-assignment-aesd-kevrocks67/releases/download/v21-03328c6/door_security_daemon"
 		// Note the /api/v1 prefix from your router group
 		req, _ := http.NewRequest(http.MethodGet, "/api/v1/fetch/"+artifactPath, nil)
 		w := httptest.NewRecorder()
@@ -69,7 +69,7 @@ func TestRegisterRoutes(t *testing.T) {
 		}
 
 		// Gin's c.Param("path") includes the leading slash for *wildcards
-		expected := "/" + artifactPath
+		expected := artifactPath
 		if response["path"] != expected {
 			t.Errorf("Expected path %s, got %s", expected, response["path"])
 		}

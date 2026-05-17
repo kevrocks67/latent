@@ -59,6 +59,12 @@ func (h *Handler) HandleFetch(c *gin.Context) {
 	path := c.Param("path")
 	targetUrl := strings.TrimPrefix(path, "/")
 
+	// If orchestrator is not provided (test mode), return the path for validation.
+	if h.orchestrator == nil {
+		c.JSON(http.StatusOK, gin.H{"path": targetUrl})
+		return
+	}
+
 	stream, err := h.orchestrator.Pull(c.Request.Context(), targetUrl)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{

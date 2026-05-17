@@ -50,10 +50,12 @@ type s3MultipartWriter struct {
 	mu       sync.Mutex
 
 	// background uploader fields
-	tasks  chan []byte
-	wg     sync.WaitGroup
-	err    error
-	errMu  sync.Mutex
+	tasks chan []byte
+	wg    sync.WaitGroup
+	err   error
+	errMu sync.Mutex
+	// number of parts enqueued but not yet completed
+	enqueued int
 }
 
 // background uploader: processes chunks sent to tasks channel serially.
@@ -125,8 +127,10 @@ func (w *s3MultipartWriter) Write(p []byte) (n int, err error) {
 		w.buffer = w.buffer[minPartSize:]
 
 		w.wg.Add(1)
-		// non-blocking send should be safe because startUploader is running
-	w.tasks <- chunk
+		// track enqueued parts so Close can make decisions deterministically
+		w.enqueued++
+		// send chunk (may block if channel full) - this provides backpressure
+		w.tasks <- chunk
 	}
 
 	w.mu.Unlock()
@@ -137,52 +141,60 @@ func (w *s3MultipartWriter) Write(p []byte) (n int, err error) {
 func (w *s3MultipartWriter) Close() error {
 	// Prevent further writes
 	w.mu.Lock()
-if w.closed {
+	if w.closed {
+		w.mu.Unlock()
+		return nil
+	}
+	w.closed = true
+
+	// If there's remaining data, send it as final part. If file is empty and
+	// no parts were enqueued, send a zero-length final part to satisfy multipart
+	// upload requirements.
+	if len(w.buffer) > 0 {
+		chunk := make([]byte, len(w.buffer))
+		copy(chunk, w.buffer)
+		w.buffer = nil
+		w.wg.Add(1)
+		w.enqueued++
+		w.tasks <- chunk
+	} else if w.enqueued == 0 && len(w.parts) == 0 {
+		// empty file: enqueue a zero-length part
+		w.wg.Add(1)
+		w.enqueued++
+		w.tasks <- []byte{}
+	}
+
+	// Close the tasks channel and wait for uploads to finish
 	w.mu.Unlock()
-	return nil
-}
-w.closed = true
+	close(w.tasks)
 
-// If there's remaining data or no parts uploaded yet, send it as final part
-if len(w.buffer) > 0 || len(w.parts) == 0 {
-	chunk := make([]byte, len(w.buffer))
-	copy(chunk, w.buffer)
-	w.buffer = nil
-	w.wg.Add(1)
-	w.tasks <- chunk
-}
+	w.wg.Wait()
 
-// Close the tasks channel and wait for uploads to finish
-w.mu.Unlock()
-close(w.tasks)
-
-w.wg.Wait()
-
-w.errMu.Lock()
-if w.err != nil {
-	// If any upload failed, attempt abort and return error
+	w.errMu.Lock()
+	if w.err != nil {
+		// If any upload failed, attempt abort and return error
+		w.errMu.Unlock()
+		w.abort()
+		return w.err
+	}
 	w.errMu.Unlock()
-	w.abort()
-	return w.err
-}
-w.errMu.Unlock()
 
-// Finalize the multipart upload on S3
-_, err := w.client.CompleteMultipartUpload(w.ctx, &s3.CompleteMultipartUploadInput{
-	Bucket:   aws.String(w.bucket),
-	Key:      aws.String(w.key),
-	UploadId: aws.String(w.uploadID),
-	MultipartUpload: &types.CompletedMultipartUpload{
-		Parts: w.parts,
-	},
-})
+	// Finalize the multipart upload on S3
+	_, err := w.client.CompleteMultipartUpload(w.ctx, &s3.CompleteMultipartUploadInput{
+		Bucket:   aws.String(w.bucket),
+		Key:      aws.String(w.key),
+		UploadId: aws.String(w.uploadID),
+		MultipartUpload: &types.CompletedMultipartUpload{
+			Parts: w.parts,
+		},
+	})
 
-if err != nil {
-	w.abort()
-	return err
-}
+	if err != nil {
+		w.abort()
+		return err
+	}
 
-return nil
+	return nil
 }
 
 func (w *s3MultipartWriter) abort() {
