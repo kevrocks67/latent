@@ -2,10 +2,13 @@ package upstream
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"strconv"
 	"time"
 
@@ -58,6 +61,22 @@ func (f *httpFetcher) Fetch(ctx context.Context, url string) (*UpstreamResult, e
 		return nil, fmt.Errorf("concurrency limit reached/context cancelled: %w", err)
 	}
 
+	start := time.Now()
+	var dnsStart, connStart, tlsStart time.Time
+	var dnsDuration, connDuration, tlsDuration, ttfb time.Duration
+
+	trace := &httptrace.ClientTrace{
+		DNSStart: func(info httptrace.DNSStartInfo) { dnsStart = time.Now() },
+		DNSDone: func(info httptrace.DNSDoneInfo) { dnsDuration = time.Since(dnsStart) },
+		ConnectStart: func(network, addr string) { connStart = time.Now() },
+		ConnectDone: func(network, addr string, err error) { connDuration = time.Since(connStart) },
+		TLSHandshakeStart: func() { tlsStart = time.Now() },
+		TLSHandshakeDone: func(state tls.ConnectionState, err error) { tlsDuration = time.Since(tlsStart) },
+		GotFirstResponseByte: func() { ttfb = time.Since(start); log.Printf("fetch trace: first byte after %v for %s", ttfb, url) },
+	}
+
+	ctx = httptrace.WithClientTrace(ctx, trace)
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		f.sem.Release(1)
@@ -69,6 +88,9 @@ func (f *httpFetcher) Fetch(ctx context.Context, url string) (*UpstreamResult, e
 		f.sem.Release(1)
 		return nil, err
 	}
+
+	total := time.Since(start)
+	log.Printf("fetch trace: url=%s status=%d total=%v dns=%v conn=%v tls=%v ttfb=%v", url, resp.StatusCode, total, dnsDuration, connDuration, tlsDuration, ttfb)
 
 	if resp.StatusCode >= 400 {
 		resp.Body.Close()

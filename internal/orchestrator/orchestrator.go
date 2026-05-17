@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/url"
 	"os"
 	"strings"
@@ -153,6 +154,7 @@ func (o *Orchestrator) Pull(ctx context.Context, url string) (io.ReadCloser, err
 
 // executeFill performs the actual upstream request and streams data to storago.
 func (o *Orchestrator) executeFill(ctx context.Context, key string, url string) (io.ReadCloser, error) {
+	log.Printf("executeFill: start key=%s url=%s", key, url)
 	var releaseOnce sync.Once
 
 	releaseLock := func() {
@@ -184,6 +186,7 @@ func (o *Orchestrator) executeFill(ctx context.Context, key string, url string) 
 		o.coordinator.SignalReady(ctx, key)
 		return nil, fmt.Errorf("failed to initialize metadata: %w", err)
 	}
+	log.Printf("executeFill: after UpsertRecord for key=%s", key)
 
 	resp, err := o.fetcher.Fetch(ctx, url)
 	if err != nil {
@@ -192,6 +195,7 @@ func (o *Orchestrator) executeFill(ctx context.Context, key string, url string) 
 		o.coordinator.SignalReady(ctx, key)
 		return nil, fmt.Errorf("upstream fetch failed : %w", err)
 	}
+	log.Printf("executeFill: after Fetch for key=%s (status=%d, contentlen=%d)", key, resp.StatusCode, resp.ContentLength)
 
 	// If the size is part of the header, we update it
 	if resp.ContentLength > 0 {
@@ -208,6 +212,7 @@ func (o *Orchestrator) executeFill(ctx context.Context, key string, url string) 
 
 		return nil, fmt.Errorf("failed to open storage writer: %w", err)
 	}
+	log.Printf("executeFill: opened storage writer for key=%s", key)
 
 	pr, pw := io.Pipe()
 
@@ -221,13 +226,25 @@ func (o *Orchestrator) executeFill(ctx context.Context, key string, url string) 
 		// Use writeCounter to get length of artifact as we write it to
 		// persistent storage
 		counter := &writeCounter{w: sw}
-		mw := io.MultiWriter(pw, counter)
 
+		// Wrap the pipe writer to log when the first bytes are written to client
+		var firstOnce sync.Once
+		lwp := writeFunc(func(p []byte) (int, error) {
+			firstOnce.Do(func() {
+				log.Printf("executeFill: first bytes sent to client for key=%s (len=%d)", key, len(p))
+			})
+			return pw.Write(p)
+		})
+		mw := io.MultiWriter(lwp, counter)
+
+		log.Printf("executeFill: starting copy to client and storage for key=%s", key)
 		_, copyErr := io.Copy(mw, resp.Body)
 		if copyErr != nil {
 			o.metastore.UpdateState(context.Background(), key, metadata.StateError)
+			log.Printf("executeFill: copy error for key=%s: %v", key, copyErr)
 		} else {
 			o.metastore.SetReady(context.Background(), key, counter.total, resp.ETag)
+			log.Printf("executeFill: set ready for key=%s size=%d", key, counter.total)
 		}
 		o.coordinator.SignalReady(context.Background(), key)
 	}()

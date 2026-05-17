@@ -73,6 +73,12 @@ func (wc *writeCounter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// writeFunc is a small helper to allow inline Writers via closures.
+// Example: lwp := writeFunc(func(p []byte) (int, error) { ... })
+type writeFunc func([]byte) (int, error)
+
+func (f writeFunc) Write(p []byte) (int, error) { return f(p) }
+
 // fillReadCloser triggers the finalization callback when the stream is closed.
 type fillReadCloser struct {
 	reader  io.Reader
