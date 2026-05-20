@@ -55,7 +55,7 @@ services:
   latent-adapter:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.test
       # Keep network: host if you are encountering build-time DNS issues
       network: host
     container_name: latent-adapter
