@@ -52,13 +52,13 @@ services:
     command: >
       -c "aws --endpoint-url=http://latent-storage:4566 s3 mb s3://artifacts"
 
-  latent-adapter:
+  latent:
     build:
       context: .
       dockerfile: Dockerfile.test
       # Keep network: host if you are encountering build-time DNS issues
       network: host
-    container_name: latent-adapter
+    container_name: latent
     dns:
       - 8.8.8.8
       - 8.8.4.4

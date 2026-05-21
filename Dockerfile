@@ -9,15 +9,15 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build the adapter binary
-RUN CGO_ENABLED=0 GOOS=linux go build -o adapter ./cmd/adapter/main.go
+# Build the latent binary
+RUN CGO_ENABLED=0 GOOS=linux go build -o latent ./cmd/latent/main.go
 
 FROM alpine:latest
 RUN apk update
 RUN apk --no-cache add ca-certificates netcat-openbsd
 
 WORKDIR /root/
-COPY --from=builder /app/adapter .
+COPY --from=builder /app/latent .
 
 # Start the application
-CMD ["./adapter"]
+CMD ["./latent"]
