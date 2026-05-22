@@ -6,18 +6,33 @@ import "time"
 
 // Config holds all application configuration
 type Config struct {
-	Server      ServerConfig      `mapstructure:"server"`
-	Storage     StorageConfig     `mapstructure:"storage"`
-	Metadata    MetadataConfig    `mapstructure:"metadata"`
-	Coordinator CoordinatorConfig `mapstructure:"coordinator"`
-	Tracing     TracingConfig     `mapstructure:"tracing"`
-	Logging     LoggingConfig     `mapstructure:"logging"`
+	Server       ServerConfig       `mapstructure:"server"`
+	Upstream     UpstreamConfig     `mapstructure:"upstream"`
+	Orchestrator OrchestratorConfig `mapstructure:"orchestrator"`
+	Storage      StorageConfig      `mapstructure:"storage"`
+	Metadata     MetadataConfig     `mapstructure:"metadata"`
+	Coordinator  CoordinatorConfig  `mapstructure:"coordinator"`
+	Tracing      TracingConfig      `mapstructure:"tracing"`
+	Logging      LoggingConfig      `mapstructure:"logging"`
 }
 
 // ServerConfig configures the primary HTTP API listener
 type ServerConfig struct {
 	Host string `mapstructure:"host"`
 	Port int    `mapstructure:"port"`
+}
+
+// UpstreamConfig configures the behavior of the Fetcher which
+// is what retrieves the artifacts from upstream
+type UpstreamConfig struct {
+	Timeout       time.Duration `mapstructure:"timeout"`
+	MaxConcurrent int64         `mapstructure:"max_concurrent"`
+}
+
+// OrchestratorConfig governs the retention rules of the core
+// distributed caching engine.
+type OrchestratorConfig struct {
+	DefaultArtifactTTL time.Duration `mapstructure:"default_artifact_ttl"`
 }
 
 // StorageConfig configures the blob storage provider (e.g., S3, GCS)
