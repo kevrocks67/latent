@@ -1,3 +1,4 @@
+---
 services:
   latent-db:
     image: postgres:18-alpine
@@ -58,6 +59,7 @@ services:
       dockerfile: Dockerfile.test
       # Keep network: host if you are encountering build-time DNS issues
       network: host
+    pull_policy: build
     container_name: latent
     dns:
       - 8.8.8.8
@@ -74,11 +76,26 @@ services:
       latent-storage-init:
         condition: service_completed_successfully
     environment:
-      - PORT=8060
-      - DB_URL=postgres://user:pass@latent-db:5432/latent?sslmode=disable
-      - VALKEY_ADDR=latent-coord:6379
-      - S3_BUCKET=artifacts
-      - AWS_REGION=us-east-1
-      - AWS_ACCESS_KEY=test
-      - AWS_SECRET_KEY=test
-      - AWS_ENDPOINT=http://latent-storage:4566
+      # Application Core Configs matching your viper keys
+      - LATENT_SERVER_HOST=0.0.0.0
+      - LATENT_SERVER_PORT=8060
+
+      # Storage Configs
+      - LATENT_STORAGE_PROVIDER=s3
+      - LATENT_STORAGE_S3_BUCKET=artifacts
+      - LATENT_STORAGE_S3_REGION=us-east-1
+      - LATENT_STORAGE_S3_ENDPOINT=http://latent-storage:4566
+      - LATENT_STORAGE_S3_ACCESS_KEY=test
+      - LATENT_STORAGE_S3_SECRET_KEY=test
+      - LATENT_STORAGE_S3_FORCE_PATH_STYLE=true
+
+      # Metadata Storage Configs (Postgres)
+      - LATENT_METADATA_POSTGRES_HOST=latent-db
+      - LATENT_METADATA_POSTGRES_PORT=5432
+      - LATENT_METADATA_POSTGRES_NAME=latent
+      - LATENT_METADATA_POSTGRES_USER=user
+      - LATENT_METADATA_POSTGRES_PASSWORD=pass
+      - LATENT_METADATA_POSTGRES_SSL_ENABLED=false
+
+      # Coordinator Configs (Valkey)
+      - LATENT_COORDINATOR_VALKEY_ENDPOINTS=latent-coord:6379
