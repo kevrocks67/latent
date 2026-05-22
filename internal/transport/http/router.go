@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
@@ -40,11 +41,6 @@ func NewHandler(orc Orchestrator) *Handler {
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1 := r.Group("/api/v1")
 	{
-		// @Summary Fetch an artifact
-		// @Description Retrieves an artifact via the Orchestrator.
-		// @Tags artifacts
-		// @Param path path string true "Artifact Path"
-		// @Router /fetch/{path} [get]
 		v1.GET("/fetch/*path", h.HandleFetch)
 	}
 
@@ -55,26 +51,38 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 }
 
 // HandleFetch processes artifact requests by delegating to the Orchestrator.
+// @Summary      Fetch an artifact
+// @Description  Retrieves an upstream object via the orchestrator distribution layer or pulls from cache.
+// @Tags         artifacts
+// @Produce      json
+// @Param        path  path      string  true  "Target Upstream Resource Path"
+// @Success      200   {object}  map[string]interface{} "Returns status metadata or streams binary artifact payload"
+// @Failure      500   {object}  map[string]string      "Returned when orchestrator pipeline fails to fetch resource"
+// @Router /fetch/{path} [get]
 func (h *Handler) HandleFetch(c *gin.Context) {
 	path := c.Param("path")
-	targetUrl := strings.TrimPrefix(path, "/")
+	targetURL := strings.TrimPrefix(path, "/")
 
 	// If orchestrator is not provided (test mode), return the path for validation.
 	if h.orchestrator == nil {
-		c.JSON(http.StatusOK, gin.H{"path": targetUrl})
+		c.JSON(http.StatusOK, gin.H{"path": targetURL})
 		return
 	}
 
-	stream, err := h.orchestrator.Pull(c.Request.Context(), targetUrl)
+	stream, err := h.orchestrator.Pull(c.Request.Context(), targetURL)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Orchestrator failed to retrieve artifact",
-			"path":  targetUrl,
+			"path":  targetURL,
 			"msg":   err.Error(),
 		})
 		return
 	}
-	defer stream.Close()
+	defer func() {
+		if err := stream.Close(); err != nil {
+			log.Printf("warning: HTTP stream failed to close: %v", err)
+		}
+	}()
 
 	// 1. Wrap the stream in a buffered reader so we can "peek" at the start
 	// Use a small peek so we don't block waiting for large buffers from slow upstreams.

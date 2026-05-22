@@ -8,5 +8,32 @@ info:
   termsOfService: http://swagger.io/terms/
   title: Latent API
   version: "1.0"
-paths: {}
+paths:
+  /fetch/{path}:
+    get:
+      description: Retrieves an upstream object via the orchestrator distribution
+        layer or pulls from cache.
+      parameters:
+      - description: Target Upstream Resource Path
+        in: path
+        name: path
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Returns status metadata or streams binary artifact payload
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Returned when orchestrator pipeline fails to fetch resource
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Fetch an artifact
+      tags:
+      - artifacts
 swagger: "2.0"
