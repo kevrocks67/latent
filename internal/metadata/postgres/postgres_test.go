@@ -35,7 +35,8 @@ func TestMain(m *testing.M) {
 
 	schemaPath, _ := filepath.Abs("../../db/schema.sql")
 
-	container, err := postgres.Run(ctx,
+	container, err := postgres.Run(
+		ctx,
 		"postgres:18-alpine",
 		postgres.WithDatabase("latent_test"),
 		postgres.WithUsername("user"),
@@ -44,7 +45,8 @@ func TestMain(m *testing.M) {
 		testcontainers.WithWaitStrategy(
 			wait.ForLog("database system is ready to accept connections").
 				WithOccurrence(2).
-				WithStartupTimeout(30*time.Second)),
+				WithStartupTimeout(30*time.Second),
+		),
 	)
 	if err != nil {
 		panic(fmt.Sprintf("failed to start postgres container: %s", err))
@@ -208,6 +210,7 @@ func TestPostgresStore_IncrementFailure(t *testing.T) {
 	key := "failure-key"
 	rec := &metadata.Record{
 		CacheKey:   key,
+		OwnerNode:  ptr("node-1"),
 		ObjectKey:  "obj-fail",
 		State:      metadata.StateFilling,
 		FreshUntil: time.Now().Add(time.Hour),

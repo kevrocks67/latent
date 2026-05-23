@@ -71,7 +71,8 @@ func (s *PostgresStore) UpsertRecord(ctx context.Context, record *metadata.Recor
 			failure_count = EXCLUDED.failure_count,
 			last_error_at = EXCLUDED.last_error_at`
 
-	_, err := s.db.ExecContext(ctx, query,
+	_, err := s.db.ExecContext(
+		ctx, query,
 		record.CacheKey,     // $1
 		record.ObjectKey,    // $2
 		record.OwnerNode,    // $3
