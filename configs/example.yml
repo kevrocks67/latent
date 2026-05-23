@@ -1,0 +1,47 @@
+---
+server:
+  host: 0.0.0.0
+  port: 8060
+upstream:
+  timeout: 30s
+  maxconcurrent: 100
+orchestrator:
+  defaultartifactttl: 24h0m0s
+storage:
+  provider: s3
+  s3:
+    bucket: artifacts
+    region: us-east-1
+    endpoint: http://latent-storage:4566
+    forcepathstyle: true
+    accesskey: test
+    secretkey: test
+metadata:
+  postgres:
+    host: latent-db
+    port: 5432
+    name: latent
+    user: user
+    password: pass
+    sslenabled: false
+    maxopenconns: 25
+    maxidleconns: 25
+    connmaxlifetime: 5m0s
+coordinator:
+  valkey:
+    endpoints:
+      - latent-coord:6379
+    user: ""
+    password: ""
+    clustermode: false
+    sslenabled: false
+    maxidleconns: 10
+    maxactiveconns: 50
+    connmaxidletime: 5m0s
+    dialtimeout: 5s
+tracing:
+  enabled: false
+  otelendpoint: ""
+  samplefraction: 0.1
+logging:
+  level: info
