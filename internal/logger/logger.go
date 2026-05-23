@@ -68,3 +68,11 @@ func FromContext(ctx context.Context) *slog.Logger {
 	}
 	return l
 }
+
+// IsInitialized provides a way to check if the global slog handler is ready.
+func IsInitialized() bool {
+	// Check if the handler is not nil (default is a text handler to stderr)
+	// and verify it is our custom JSON handler type.
+	_, ok := slog.Default().Handler().(*slog.JSONHandler)
+	return ok
+}
