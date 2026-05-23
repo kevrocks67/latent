@@ -3,10 +3,13 @@ package app
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
+	"time"
 
 	gcs_storage "cloud.google.com/go/storage"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -15,7 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/gin-gonic/gin"
 	"github.com/kevrocks67/latent/internal/coordinator"
-	"github.com/kevrocks67/latent/internal/transport/http"
+	transport_http "github.com/kevrocks67/latent/internal/transport/http"
 	"github.com/kevrocks67/latent/internal/upstream"
 	_ "github.com/lib/pq" // Imported to ensure postgres driver is loaded
 	vk "github.com/valkey-io/valkey-go"
@@ -86,15 +89,41 @@ func (a *Application) Run(ctx context.Context) error {
 
 	// Bind & Start Network Transport
 	r := gin.Default()
-	handler := http.NewHandler(engine)
+	handler := transport_http.NewHandler(engine)
 	handler.RegisterRoutes(r)
 
 	addr := fmt.Sprintf("%s:%d", a.cfg.Server.Host, a.cfg.Server.Port)
 	log.Printf("Latent Adapter listening on %s", addr)
 
-	// Start the router engine block
-	if err := r.Run(addr); err != nil {
-		return fmt.Errorf("http router runtime failure: %w", err)
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           r,
+		ReadHeaderTimeout: 3 * time.Second,
+	}
+
+	serverErrCh := make(chan error, 1)
+	go func() {
+		log.Printf("Latent Adapter listening on http://%s", addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErrCh <- fmt.Errorf("http router runtime failure: %w", err)
+		}
+	}()
+
+	// Block execution stream until the terminal signal triggers context cancellation OR server crashes
+	select {
+	case err := <-serverErrCh:
+		return err
+	case <-ctx.Done():
+		log.Println("SIGTERM/SIGINT trapped. Initiating server transport drain...")
+
+		// Establish a strict grace window for remaining active socket transfers to complete
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("Forced transport shutdown warning: %v", err)
+		}
+		log.Println("HTTP transport layer fully released.")
 	}
 
 	return nil
