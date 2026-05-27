@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 
@@ -16,6 +15,8 @@ import (
 
 	// IMPORTANT: Import the generated docs from YOUR project path
 	_ "github.com/kevrocks67/latent/docs"
+
+	"github.com/kevrocks67/latent/internal/logger"
 )
 
 // Orchestrator defines the core contract for artifact lifecycle management.
@@ -80,7 +81,7 @@ func (h *Handler) HandleFetch(c *gin.Context) {
 	}
 	defer func() {
 		if err := stream.Close(); err != nil {
-			log.Printf("warning: HTTP stream failed to close: %v", err)
+			logger.FromContext(c.Request.Context()).Warn("HTTP stream failed to close", "err", err)
 		}
 	}()
 
