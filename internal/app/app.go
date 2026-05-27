@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/gin-gonic/gin"
 	"github.com/kevrocks67/latent/internal/coordinator"
+	"github.com/kevrocks67/latent/internal/logger"
 	transport_http "github.com/kevrocks67/latent/internal/transport/http"
 	"github.com/kevrocks67/latent/internal/upstream"
 	_ "github.com/lib/pq" // Imported to ensure postgres driver is loaded
@@ -43,6 +44,9 @@ type Application struct {
 // New initializes an Application container with a parsed configuration tree,
 // preparing the internal dependency graph for execution.
 func New(cfg *config.Config) *Application {
+	if !logger.IsInitialized() {
+		panic("logger not initialized: telemetry system must be configured before app startup")
+	}
 	return &Application{cfg: cfg}
 }
 
@@ -54,26 +58,26 @@ func (a *Application) Run(ctx context.Context) error {
 	// Metadata Layer
 	metaStore, closeDB, err := a.initMetadataStore(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("metadata database pool failed to initialize: %w", err)
 	}
 
 	defer func() {
 		if err := closeDB(); err != nil {
-			log.Printf("warning: metadata database pool failed to close cleanly: %v", err)
+			slog.Warn("metadata database pool failed to close cleanly", "err", err)
 		}
 	}()
 
 	// Consensus/Locking Layer
 	coord, closeValkey, err := a.initCoordinator()
 	if err != nil {
-		return err
+		return fmt.Errorf("coordinator failed to initialize: %w", err)
 	}
 	defer closeValkey()
 
 	// Storage Layer
 	blobStore, closeStorage, err := a.initBlobStore(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("blobstore failed to initialize: %w", err)
 	}
 	defer closeStorage()
 
@@ -93,7 +97,6 @@ func (a *Application) Run(ctx context.Context) error {
 	handler.RegisterRoutes(r)
 
 	addr := fmt.Sprintf("%s:%d", a.cfg.Server.Host, a.cfg.Server.Port)
-	log.Printf("Latent Adapter listening on %s", addr)
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -103,7 +106,11 @@ func (a *Application) Run(ctx context.Context) error {
 
 	serverErrCh := make(chan error, 1)
 	go func() {
-		log.Printf("Latent Adapter listening on http://%s", addr)
+		slog.Info("latent adapter started listening",
+			"network.protocol", "http",
+			"network.bind_address", a.cfg.Server.Host,
+			"network.bind_port", a.cfg.Server.Port,
+		)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErrCh <- fmt.Errorf("http router runtime failure: %w", err)
 		}
@@ -114,16 +121,16 @@ func (a *Application) Run(ctx context.Context) error {
 	case err := <-serverErrCh:
 		return err
 	case <-ctx.Done():
-		log.Println("SIGTERM/SIGINT trapped. Initiating server transport drain...")
+		slog.Info("SIGTERM/SIGINT trapped. Initiating server transport drain...")
 
 		// Establish a strict grace window for remaining active socket transfers to complete
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
 		if err := srv.Shutdown(shutdownCtx); err != nil {
-			log.Printf("Forced transport shutdown warning: %v", err)
+			slog.Warn("Forced transport shutdown warning", "err", err)
 		}
-		log.Println("HTTP transport layer fully released.")
+		slog.Info("HTTP transport layer fully released.")
 	}
 
 	return nil
@@ -229,7 +236,7 @@ func (a *Application) initBlobStore(ctx context.Context) (storage.BlobStore, fun
 
 		gcsClient, err := gcs_storage.NewClient(ctx, gcsOpts...)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("failed to create GCS client: %w", err)
 		}
 
 		closeFn := func() {
@@ -239,6 +246,6 @@ func (a *Application) initBlobStore(ctx context.Context) (storage.BlobStore, fun
 		return gcsimpl.NewGCSStore(gcsClient, a.cfg.Storage.GCS.Bucket), closeFn, nil
 
 	default:
-		return nil, func() {}, fmt.Errorf("invalid storage provider: %s", a.cfg.Storage.Provider)
+		return nil, func() {}, fmt.Errorf("unsupported storage provider configuration: %s", a.cfg.Storage.Provider)
 	}
 }
