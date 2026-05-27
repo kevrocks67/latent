@@ -254,14 +254,14 @@ func (w *mockWriter) Close() error {
 }
 
 type MockFetcher struct {
-	FetchFunc func(ctx context.Context, url string) (*upstream.UpstreamResult, error)
+	FetchFunc func(ctx context.Context, url string) (*upstream.Result, error)
 }
 
-func (f *MockFetcher) Fetch(ctx context.Context, url string) (*upstream.UpstreamResult, error) {
+func (f *MockFetcher) Fetch(ctx context.Context, url string) (*upstream.Result, error) {
 	if f.FetchFunc != nil {
 		return f.FetchFunc(ctx, url)
 	}
-	return &upstream.UpstreamResult{
+	return &upstream.Result{
 		Body: io.NopCloser(strings.NewReader("mock-fetch-data")),
 		ETag: "mock-etag",
 	}, nil
@@ -300,8 +300,8 @@ func TestOrchestrator_Pull_Logic(t *testing.T) {
 		coord := &MockCoordinator{}
 		storage := &MockStorage{}
 		fetcher := &MockFetcher{
-			FetchFunc: func(ctx context.Context, url string) (*upstream.UpstreamResult, error) {
-				return &upstream.UpstreamResult{
+			FetchFunc: func(ctx context.Context, url string) (*upstream.Result, error) {
+				return &upstream.Result{
 					Body: io.NopCloser(strings.NewReader("fresh-data")),
 					ETag: "v1",
 				}, nil
@@ -349,7 +349,7 @@ func TestOrchestrator_executeFill_Failures(t *testing.T) {
 		store := &MockMetaStore{records: make(map[string]*metadata.Record)}
 		coord := &MockCoordinator{}
 		fetcher := &MockFetcher{
-			FetchFunc: func(ctx context.Context, url string) (*upstream.UpstreamResult, error) {
+			FetchFunc: func(ctx context.Context, url string) (*upstream.Result, error) {
 				return nil, errors.New("upstream timeout")
 			},
 		}
@@ -394,8 +394,8 @@ func TestOrchestrator_executeFill_Failures(t *testing.T) {
 		}()
 
 		fetcher := &MockFetcher{
-			FetchFunc: func(ctx context.Context, url string) (*upstream.UpstreamResult, error) {
-				return &upstream.UpstreamResult{Body: pr}, nil
+			FetchFunc: func(ctx context.Context, url string) (*upstream.Result, error) {
+				return &upstream.Result{Body: pr}, nil
 			},
 		}
 		orchestrator := New(store, coord, storage, fetcher, 1*time.Hour)
@@ -429,8 +429,8 @@ func TestOrchestrator_Pull_StateErrorRetry(t *testing.T) {
 	}}
 	coord := &MockCoordinator{}
 	storage := &MockStorage{}
-	fetcher := &MockFetcher{FetchFunc: func(ctx context.Context, u string) (*upstream.UpstreamResult, error) {
-		return &upstream.UpstreamResult{Body: io.NopCloser(strings.NewReader("retried-data")), ETag: "e1"}, nil
+	fetcher := &MockFetcher{FetchFunc: func(ctx context.Context, u string) (*upstream.Result, error) {
+		return &upstream.Result{Body: io.NopCloser(strings.NewReader("retried-data")), ETag: "e1"}, nil
 	}}
 	orch := New(store, coord, storage, fetcher, 1*time.Hour)
 

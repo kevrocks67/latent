@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/url"
 	"os"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"github.com/kevrocks67/latent/internal/coordinator"
+	"github.com/kevrocks67/latent/internal/logger"
 	"github.com/kevrocks67/latent/internal/metadata"
 	"github.com/kevrocks67/latent/internal/storage"
 	"github.com/kevrocks67/latent/internal/upstream"
@@ -23,7 +23,6 @@ import (
 
 // Orchestrator coordinates between durable metadata (MySQL), distributed locks (Redis),
 // and binary storage (GCS/S3).
-
 type Orchestrator struct {
 	mu          sync.RWMutex
 	nodeID      string
@@ -55,7 +54,7 @@ func generateNodeID() string {
 
 }
 
-// Initializes the main orchestaror with its required dependencies.
+// New initializes the main orchestaror with its required dependencies.
 func New(metastore metadata.MetadataStore, coord coordinator.Coordinator, storage storage.BlobStore, fetcher upstream.Fetcher, defaultTTL time.Duration) *Orchestrator {
 	return &Orchestrator{
 		metastore:   metastore,
@@ -97,7 +96,7 @@ func (o *Orchestrator) getTTLForURL(u string) time.Duration {
 
 }
 
-// Fetch attempts to retrieve an artifact from cacho. If missing, it coordinates
+// Pull attempts to retrieve an artifact from cacho. If missing, it coordinates
 // a single-flight upstream fetch to populate the cache and stream to the user.
 func (o *Orchestrator) Pull(ctx context.Context, url string) (io.ReadCloser, error) {
 	key, err := GenerateCacheKey(url)
@@ -126,18 +125,18 @@ func (o *Orchestrator) Pull(ctx context.Context, url string) (io.ReadCloser, err
 			case metadata.StateError:
 				// Determine cooldown: base doubled per failure, capped
 				base := 30 * time.Second
-				cap := 1 * time.Hour
+				timeCap := 1 * time.Hour
 				cooldown := base
 				for i := 0; i < record.FailureCount; i++ {
 					cooldown *= 2
-					if cooldown >= cap {
-						cooldown = cap
+					if cooldown >= timeCap {
+						cooldown = timeCap
 						break
 					}
 				}
 				// If last error is unset or cooldown expired, allow retry
 				if record.LastErrorAt == nil || time.Since(*record.LastErrorAt) >= cooldown {
-					log.Printf("Pull: retrying key=%s after cooldown (%v)", key, cooldown)
+					logger.FromContext(ctx).Info("Pull: retrying", "key", key, "cooldown", cooldown.String())
 					break
 				}
 				return nil, fmt.Errorf("cache entry is in error state; retry after %v", cooldown)
@@ -154,10 +153,25 @@ func (o *Orchestrator) Pull(ctx context.Context, url string) (io.ReadCloser, err
 			continue
 		}
 
-		record, _ = o.metastore.GetRecord(ctx, key)
+		record, err = o.metastore.GetRecord(ctx, key)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			// Release the distributed lock and return the error
+			if relErr := o.coordinator.ReleaseLock(ctx, key, o.nodeID); relErr != nil {
+				logger.FromContext(ctx).Warn("failed to release distributed lock after metadata lookup error",
+					"artifact.key", key,
+					"err", relErr,
+				)
+			}
+			return nil, fmt.Errorf("metadata lookup failed: %w", err)
+		}
 
 		if record != nil && record.State == metadata.StateReady {
-			o.coordinator.ReleaseLock(ctx, key, o.nodeID)
+			if err := o.coordinator.ReleaseLock(ctx, key, o.nodeID); err != nil {
+				logger.FromContext(ctx).Warn("distributed lock release failed during cache hit path",
+					"artifact.key", key,
+					"err", err,
+				)
+			}
 			return o.storage.Reader(ctx, record.ObjectKey)
 		}
 
@@ -170,12 +184,17 @@ func (o *Orchestrator) Pull(ctx context.Context, url string) (io.ReadCloser, err
 
 // executeFill performs the actual upstream request and streams data to storago.
 func (o *Orchestrator) executeFill(ctx context.Context, key string, url string) (io.ReadCloser, error) {
-	log.Printf("executeFill: start key=%s url=%s", key, url)
+	logger.FromContext(ctx).Info("artifact cache miss: executing backend fill pipeline", "artifact.key", key, "artifact.url", url)
 	var releaseOnce sync.Once
 
 	releaseLock := func() {
 		releaseOnce.Do(func() {
-			o.coordinator.ReleaseLock(context.Background(), key, o.nodeID)
+			if err := o.coordinator.ReleaseLock(context.Background(), key, o.nodeID); err != nil {
+				logger.FromContext(ctx).Warn("distributed lock release failed during cache fill path",
+					"artifact.key", key,
+					"err", err,
+				)
+			}
 		})
 	}
 
@@ -199,50 +218,106 @@ func (o *Orchestrator) executeFill(ctx context.Context, key string, url string) 
 	// Create record of artifact
 	if err := o.metastore.UpsertRecord(ctx, &record); err != nil {
 		releaseLock()
-		o.coordinator.SignalReady(ctx, key)
+		if err := o.coordinator.SignalReady(ctx, key); err != nil {
+			logger.FromContext(ctx).Warn("distributed lock failed to signal ready during metadata upsert",
+				"artifact.key", key,
+				"err", err,
+			)
+		}
 		return nil, fmt.Errorf("failed to initialize metadata: %w", err)
 	}
-	log.Printf("executeFill: after UpsertRecord for key=%s", key)
+	logger.FromContext(ctx).Debug("cache lock intent registered in metadata database", "artifact.key", key)
 
 	resp, err := o.fetcher.Fetch(ctx, url)
 	if err != nil {
 		// record failure and mark error state with increment
 		if ierr := o.metastore.IncrementFailure(ctx, key); ierr != nil {
-			log.Printf("executeFill: IncrementFailure failed for key=%s: %v", key, ierr)
+			logger.FromContext(ctx).Error("executeFill: IncrementFailure failed", "key", key, "err", ierr)
 		}
 		releaseLock()
-		o.coordinator.SignalReady(ctx, key)
+		if serr := o.coordinator.SignalReady(ctx, key); serr != nil {
+			logger.FromContext(ctx).Warn("failed to signal ready after upstream fetch failure",
+				"artifact.key", key,
+				"err", serr,
+			)
+		}
 		return nil, fmt.Errorf("upstream fetch failed : %w", err)
 	}
-	log.Printf("executeFill: after Fetch for key=%s (status=%d, contentlen=%d)", key, resp.StatusCode, resp.ContentLength)
+	logger.FromContext(ctx).Info("upstream artifact retrieval transaction complete",
+		"artifact.url", url,
+		"http.status_code", resp.StatusCode,
+		"http.content_len", resp.ContentLength,
+		"telemetry.total_ms", resp.TotalMS,
+		"telemetry.dns_ms", resp.DNSMS,
+		"telemetry.tls_ms", resp.TLSMS,
+		"telemetry.ttfb_ms", resp.TTFBMS,
+	)
 
 	// If the size is part of the header, we update it
 	if resp.ContentLength > 0 {
-		o.metastore.UpdateSizeBytes(ctx, key, resp.ContentLength)
+		if err := o.metastore.UpdateSizeBytes(ctx, key, resp.ContentLength); err != nil {
+			logger.FromContext(ctx).Warn("failed to update stored size for artifact",
+				"artifact.key", key,
+				"content_length", resp.ContentLength,
+				"err", err,
+			)
+		}
 	}
 
 	// Get writer to persist artifact
 	sw, err := o.storage.Writer(ctx, objectKey)
 	if err != nil {
-		resp.Body.Close()
+		if cerr := resp.Body.Close(); cerr != nil {
+			logger.FromContext(ctx).Warn("failed to close response body after storage writer error",
+				"artifact.key", key,
+				"err", cerr,
+			)
+		}
 		// record failure
 		if ierr := o.metastore.IncrementFailure(ctx, key); ierr != nil {
-			log.Printf("executeFill: IncrementFailure failed for key=%s: %v", key, ierr)
+			logger.FromContext(ctx).Error("executeFill: IncrementFailure failed", "key", key, "err", ierr)
 		}
 		releaseLock()
-		o.coordinator.SignalReady(ctx, key)
+		if serr := o.coordinator.SignalReady(ctx, key); serr != nil {
+			logger.FromContext(ctx).Warn("failed to signal ready after storage writer error",
+				"artifact.key", key,
+				"err", serr,
+			)
+		}
 
 		return nil, fmt.Errorf("failed to open storage writer: %w", err)
 	}
-	log.Printf("executeFill: opened storage writer for key=%s", key)
+	logger.FromContext(ctx).Debug("executeFill: opened storage writer", "key", key)
 
 	pr, pw := io.Pipe()
 
+	detachedCtx := context.WithoutCancel(ctx)
 	// Start the async fill. The LOCK IS HELD while this goroutine is running.
 	go func() {
-		defer resp.Body.Close()
-		defer pw.Close()
-		defer sw.Close()
+		defer func() {
+			if cerr := resp.Body.Close(); cerr != nil {
+				logger.FromContext(detachedCtx).Warn("failed to close response body in fill goroutine",
+					"artifact.key", key,
+					"err", cerr,
+				)
+			}
+		}()
+		defer func() {
+			if cerr := pw.Close(); cerr != nil {
+				logger.FromContext(detachedCtx).Warn("failed to close pipe writer in fill goroutine",
+					"artifact.key", key,
+					"err", cerr,
+				)
+			}
+		}()
+		defer func() {
+			if cerr := sw.Close(); cerr != nil {
+				logger.FromContext(detachedCtx).Warn("failed to close storage writer in fill goroutine",
+					"artifact.key", key,
+					"err", cerr,
+				)
+			}
+		}()
 		defer releaseLock()
 
 		// Use writeCounter to get length of artifact as we write it to
@@ -253,24 +328,36 @@ func (o *Orchestrator) executeFill(ctx context.Context, key string, url string) 
 		var firstOnce sync.Once
 		lwp := writeFunc(func(p []byte) (int, error) {
 			firstOnce.Do(func() {
-				log.Printf("executeFill: first bytes sent to client for key=%s (len=%d)", key, len(p))
+				logger.FromContext(detachedCtx).Debug("executeFill: first bytes sent to client", "key", key, "len", len(p))
 			})
 			return pw.Write(p)
 		})
 		mw := io.MultiWriter(lwp, counter)
 
-		log.Printf("executeFill: starting copy to client and storage for key=%s", key)
+		logger.FromContext(detachedCtx).Info("streaming remote payload to object storage backend", "artifact.key", key)
 		_, copyErr := io.Copy(mw, resp.Body)
 		if copyErr != nil {
-			if ierr := o.metastore.IncrementFailure(context.Background(), key); ierr != nil {
-				log.Printf("executeFill: IncrementFailure failed for key=%s: %v", key, ierr)
+			if ierr := o.metastore.IncrementFailure(detachedCtx, key); ierr != nil {
+				logger.FromContext(detachedCtx).Error("executeFill: IncrementFailure failed", "key", key, "err", ierr)
 			}
-			log.Printf("executeFill: copy error for key=%s: %v", key, copyErr)
+			logger.FromContext(detachedCtx).Error("executeFill: copy error", "key", key, "err", copyErr)
 		} else {
-			o.metastore.SetReady(context.Background(), key, counter.total, resp.ETag)
-			log.Printf("executeFill: set ready for key=%s size=%d", key, counter.total)
+			if err := o.metastore.SetReady(detachedCtx, key, counter.total, resp.ETag); err != nil {
+				logger.FromContext(detachedCtx).Error("failed to mark artifact ready in metadata store",
+					"artifact.key", key,
+					"storage.size_bytes", counter.total,
+					"err", err,
+				)
+			} else {
+				logger.FromContext(detachedCtx).Info("artifact cache fill successful: resource marked ready", "artifact.key", key, "storage.size_bytes", counter.total)
+			}
 		}
-		o.coordinator.SignalReady(context.Background(), key)
+		if serr := o.coordinator.SignalReady(detachedCtx, key); serr != nil {
+			logger.FromContext(detachedCtx).Warn("failed to signal ready after fill completion",
+				"artifact.key", key,
+				"err", serr,
+			)
+		}
 	}()
 
 	return pr, nil

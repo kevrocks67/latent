@@ -92,7 +92,48 @@ func (a *Application) Run(ctx context.Context) error {
 	)
 
 	// Bind & Start Network Transport
-	r := gin.Default()
+	// Create a raw router without the noisy default text writers
+	r := gin.New()
+	// Ensure panics are recovered and the process continues running
+	r.Use(gin.Recovery())
+
+	// Custom structural middleware for HTTP request tracing
+	r.Use(func(c *gin.Context) {
+		start := time.Now()
+		path := c.Request.URL.Path
+		query := c.Request.URL.RawQuery
+
+		// Execute the next handlers
+		c.Next()
+
+		end := time.Now()
+		latency := end.Sub(start)
+		status := c.Writer.Status()
+
+		attributes := []any{
+			"http.method", c.Request.Method,
+			"http.path", path,
+			"http.status_code", status,
+			"http.client_ip", c.ClientIP(),
+			"http.latency_ms", latency.Milliseconds(),
+		}
+
+		if query != "" {
+			attributes = append(attributes, "http.query", query)
+		}
+
+		l := logger.FromContext(c.Request.Context())
+		if status >= 500 {
+			errStr := c.Errors.ByType(gin.ErrorTypePrivate).String()
+			if errStr != "" {
+				attributes = append(attributes, "err", errStr)
+			}
+			l.Error("http request pipeline runtime error", attributes...)
+		} else {
+			l.Info("http request completed", attributes...)
+		}
+	})
+
 	handler := transport_http.NewHandler(engine)
 	handler.RegisterRoutes(r)
 
