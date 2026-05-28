@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/url"
 	"os"
 	"strings"
@@ -115,8 +116,26 @@ func (o *Orchestrator) Pull(ctx context.Context, url string) (io.ReadCloser, err
 			case metadata.StateReady:
 				// Cache hit
 				//return o.storage.Reader(ctx, record.ObjectKey)
-				return o.getStorageReaderWithRetry(ctx, record.ObjectKey)
+				//return o.getStorageReaderWithRetry(ctx, record.ObjectKey)
+				rc, err := o.getStorageReaderWithRetry(ctx, record.ObjectKey)
+				if err != nil {
+					if errors.Is(err, storage.ErrKeyNotFound) {
+						if demoteErr := o.metastore.DemoteToFilling(ctx, key, o.nodeID); demoteErr != nil {
+							return nil, fmt.Errorf("failed to handle ghost record demotion: %w", demoteErr)
+						}
+						break
+					}
+					return nil, fmt.Errorf("cache hit storage streaming failure: %w", err)
+				}
+				return rc, nil
 			case metadata.StateFilling:
+				isStaleFill := time.Since(record.UpdatedAt) > 15*time.Second
+				if (record.OwnerNode != nil && *record.OwnerNode == o.nodeID) || isStaleFill {
+					if isStaleFill {
+						slog.Debug("Pull: Evicting zombie node fill lease for key=%s (last active: %v)", key, record.UpdatedAt)
+					}
+					break
+				}
 				err := o.coordinator.WaitForReady(ctx, key)
 				if err != nil {
 					return nil, fmt.Errorf("wait for ready failed: %w", err)
@@ -372,8 +391,9 @@ func (o *Orchestrator) getStorageReaderWithRetry(ctx context.Context, objectKey 
 			return rc, nil
 		}
 		lastErr = err
-		// If it's a 404, wait a bit for consistency. If it's another error, return immediately.
-		if strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "NoSuchKey") {
+		if errors.Is(err, storage.ErrKeyNotFound) {
+			// S3 might be experiencing transient read-after-write replication lag
+			// Sleep using an exponential backoff strategy and retry.
 			time.Sleep(time.Duration(100*(i+1)) * time.Millisecond)
 			continue
 		}

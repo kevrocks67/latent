@@ -95,6 +95,19 @@ func (m *MockMetaStore) IncrementFailure(ctx context.Context, key string) error 
 	return errors.New("record not found")
 }
 
+func (m *MockMetaStore) DemoteToFilling(ctx context.Context, key string, nodeID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if r, ok := m.records[key]; ok {
+		now := time.Now()
+		r.OwnerNode = &nodeID
+		r.State = metadata.StateFilling
+		r.UpdatedAt = now
+		return nil
+	}
+	return errors.New("record not found")
+}
+
 func (m *MockMetaStore) UpdateState(ctx context.Context, key string, state metadata.CacheState) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -127,7 +140,7 @@ func (m *MockCoordinator) getChan(key string) chan struct{} {
 	return ch
 }
 
-func (m *MockCoordinator) AcquireLock(ctx context.Context, key string, nodeId string, ttl time.Duration) (bool, error) {
+func (m *MockCoordinator) AcquireLock(ctx context.Context, key string, nodeID string, ttl time.Duration) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.failAcquire {
@@ -143,7 +156,7 @@ func (m *MockCoordinator) AcquireLock(ctx context.Context, key string, nodeId st
 	return true, nil
 }
 
-func (m *MockCoordinator) ReleaseLock(ctx context.Context, key string, nodeId string) error {
+func (m *MockCoordinator) ReleaseLock(ctx context.Context, key string, nodeID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.locks != nil {

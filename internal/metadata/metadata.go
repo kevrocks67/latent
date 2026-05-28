@@ -103,6 +103,10 @@ type MetadataStore interface {
 	// IncrementFailure increments the failure counter and sets LastErrorAt to NOW().
 	IncrementFailure(ctx context.Context, key string) error
 
+	// DemoteToFilling sets the state of an artifact back to FILLING state in case
+	// of missing/stale artifact
+	DemoteToFilling(ctx context.Context, key string, nodeID string) error
+
 	// DeleteRecord removes the metadata entry from durable storage.
 	DeleteRecord(ctx context.Context, key string) error
 }

@@ -23,11 +23,6 @@ var (
 	testStore *PostgresStore
 )
 
-// ptr is a helper to take the address of a string literal.
-func ptr(s string) *string {
-	return &s
-}
-
 // TestMain manages the lifecycle of the Postgres container for the entire package.
 func TestMain(m *testing.M) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -90,7 +85,7 @@ func TestPostgresStore_UpsertRecord(t *testing.T) {
 	rec := &metadata.Record{
 		CacheKey:    "key-1",
 		ObjectKey:   "obj-1",
-		OwnerNode:   ptr("node-1"),
+		OwnerNode:   new("node-1"),
 		State:       metadata.StateFilling,
 		FreshUntil:  time.Now().Add(time.Hour).Truncate(time.Microsecond),
 		ValidatedAt: time.Now().Truncate(time.Microsecond),
@@ -118,7 +113,7 @@ func TestPostgresStore_SetReady(t *testing.T) {
 	testStore.UpsertRecord(ctx, &metadata.Record{
 		CacheKey:   key,
 		ObjectKey:  "obj-2",
-		OwnerNode:  ptr("node-1"),
+		OwnerNode:  new("node-1"),
 		State:      metadata.StateFilling,
 		FreshUntil: time.Now().Add(time.Hour),
 	})
@@ -152,7 +147,7 @@ func TestPostgresStore_UpdateState(t *testing.T) {
 	testStore.UpsertRecord(ctx, &metadata.Record{
 		CacheKey:   key,
 		ObjectKey:  "obj-3",
-		OwnerNode:  ptr("node-1"),
+		OwnerNode:  new("node-1"),
 		State:      metadata.StateFilling,
 		FreshUntil: time.Now().Add(time.Hour),
 	})
@@ -179,7 +174,7 @@ func TestPostgresStore_DeleteRecord(t *testing.T) {
 	testStore.UpsertRecord(ctx, &metadata.Record{
 		CacheKey:   key,
 		ObjectKey:  "obj-4",
-		OwnerNode:  ptr("node-1"),
+		OwnerNode:  new("node-1"),
 		State:      metadata.StateReady,
 		FreshUntil: time.Now().Add(time.Hour),
 	})
@@ -210,7 +205,7 @@ func TestPostgresStore_IncrementFailure(t *testing.T) {
 	key := "failure-key"
 	rec := &metadata.Record{
 		CacheKey:   key,
-		OwnerNode:  ptr("node-1"),
+		OwnerNode:  new("node-1"),
 		ObjectKey:  "obj-fail",
 		State:      metadata.StateFilling,
 		FreshUntil: time.Now().Add(time.Hour),
@@ -242,5 +237,69 @@ func TestPostgresStore_IncrementFailure(t *testing.T) {
 	}
 	if got2.FailureCount != 0 || got2.LastErrorAt != nil {
 		t.Errorf("expected failures reset on SetReady, got count=%d last=%v", got2.FailureCount, got2.LastErrorAt)
+	}
+}
+
+func TestPostgresStore_DemoteToFilling(t *testing.T) {
+	cleanupDB(t)
+	ctx := context.Background()
+	key := "ghost-recovery-key"
+
+	// Seed a stale/ghost record with existing failure history
+	initialErrorTime := time.Now().Add(-10 * time.Minute).Truncate(time.Microsecond)
+	seededRecord := &metadata.Record{
+		CacheKey:     key,
+		ObjectKey:    "artifacts/" + key,
+		OwnerNode:    new("zombie-node-99"),
+		State:        metadata.StateReady, // DB thinks it's completely ready
+		FreshUntil:   time.Now().Add(time.Hour).Truncate(time.Microsecond),
+		FailureCount: 3, // Crucial: seeded backoff metrics history
+		LastErrorAt:  &initialErrorTime,
+	}
+
+	if err := testStore.UpsertRecord(ctx, seededRecord); err != nil {
+		t.Fatalf("Failed to seed initial test record: %v", err)
+	}
+
+	// Capture initial timestamps to verify 'updated_at' advances properly
+	initialGet, err := testStore.GetRecord(ctx, key)
+	if err != nil {
+		t.Fatalf("Failed to read back initial seeded record: %v", err)
+	}
+
+	// Small pause to allow system clock separation for timestamp validation
+	time.Sleep(5 * time.Millisecond)
+
+	// Fire the demotion call targeting our current orchestrator Node ID
+	targetNodeID := "orchestrator-node-fresh"
+	if err := testStore.DemoteToFilling(ctx, key, targetNodeID); err != nil {
+		t.Fatalf("DemoteToFilling execution failed: %v", err)
+	}
+
+	// Fetch the row state post-mutation
+	got, err := testStore.GetRecord(ctx, key)
+	if err != nil {
+		t.Fatalf("Failed to query record post-demotion: %v", err)
+	}
+
+	// State Assertions
+	if got.State != metadata.StateFilling {
+		t.Errorf("State mismatch: got %s, want %s", got.State, metadata.StateFilling)
+	}
+	if got.OwnerNode == nil || *got.OwnerNode != targetNodeID {
+		t.Errorf("OwnerNode mismatch: got %v, want %s", got.OwnerNode, targetNodeID)
+	}
+
+	// Timestamp Invariants
+	if !got.UpdatedAt.After(initialGet.UpdatedAt) {
+		t.Errorf("UpdatedAt timestamp failed to advance: updated_at=%v, initial=%v", got.UpdatedAt, initialGet.UpdatedAt)
+	}
+
+	// Telemetry Preservations (The Golden Guardrail)
+	if got.FailureCount != 3 {
+		t.Errorf("Telemetry regression: failure_count was modified! got %d, want 3", got.FailureCount)
+	}
+	if got.LastErrorAt == nil || !got.LastErrorAt.Equal(initialErrorTime) {
+		t.Errorf("Telemetry regression: last_error_at was mutated! got %v, want %v", got.LastErrorAt, initialErrorTime)
 	}
 }

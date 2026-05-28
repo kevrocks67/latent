@@ -146,3 +146,20 @@ func (s *PostgresStore) IncrementFailure(ctx context.Context, key string) error 
 	}
 	return nil
 }
+
+func (s *PostgresStore) DemoteToFilling(ctx context.Context, key string, nodeID string) error {
+	query := `
+		UPDATE cache_records
+		SET
+			state = 'filling',
+			owner_node = $1,
+			updated_at = NOW()
+		WHERE cache_key = $2;
+	`
+
+	_, err := s.db.ExecContext(ctx, query, nodeID, key)
+	if err != nil {
+		return fmt.Errorf("postgres demote to filling error: %w", err)
+	}
+	return nil
+}

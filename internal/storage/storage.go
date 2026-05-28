@@ -2,8 +2,12 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"io"
 )
+
+// ErrKeyNotFound is a sentinel error for when the artifact is not found in the bucket
+var ErrKeyNotFound = errors.New("requested object key not found in storage bucket")
 
 // BlobStore handles the 'Data Plane'—the raw storage of binary artifacts.
 // This abstracts cloud provider specifics (GCS/S3) from the core engine.

@@ -10,6 +10,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
+	"github.com/kevrocks67/latent/internal/storage"
 )
 
 // BlobStore defines the interface for raw binary storage.
@@ -236,6 +238,12 @@ func (s *S3Store) Reader(ctx context.Context, objectKey string) (io.ReadCloser, 
 		Key:    aws.String(objectKey),
 	})
 	if err != nil {
+		if apiErr, ok := errors.AsType[smithy.APIError](err); ok {
+			if apiErr.ErrorCode() == "NoSuchKey" {
+				return nil, storage.ErrKeyNotFound
+			}
+		}
+		// Return any other structural errors (network loss, expired credentials) as-is
 		return nil, err
 	}
 	return output.Body, nil
