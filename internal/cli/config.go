@@ -12,6 +12,9 @@ import (
 var ConfigCmd = &cobra.Command{
 	Use:   "config",
 	Short: "Manage and inspect the latent configuration profile",
+	// This subcommand manages config files and should not trigger the global
+	// configuration loader in the root command. It performs its own loading.
+	Annotations: map[string]string{"load_config": "false"},
 }
 
 var validateCmd = &cobra.Command{

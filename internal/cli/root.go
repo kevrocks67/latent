@@ -28,6 +28,15 @@ var RootCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// Walk up the command tree to see if any ancestor has declared that the
+		// root global configuration should NOT be loaded. Commands like `config`
+		// perform their own config.Load and must not trigger the global loader.
+		for c := cmd; c != nil; c = c.Parent() {
+			if v, ok := c.Annotations["load_config"]; ok && (v == "false" || v == "no") {
+				return nil
+			}
+		}
+
 		var err error
 		cfg, err = config.Load(CfgPath)
 		if err != nil {
